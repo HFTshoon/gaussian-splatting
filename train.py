@@ -34,6 +34,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    gaussians_count = []
+    using_gaussians_count = []
+    using_gaussians_percent = []
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -72,10 +75,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
+        if iteration % 1000 == 0:
+            gaussians_count.append(gaussians.get_xyz.shape[0])
+            gaussians_cur_count = gaussians.get_xyz.shape[0]
+
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            
+        if args.single_view:
+            viewpoint_cam = viewpoint_stack.pop(0)
+        else:
+            if iteration % 1000 == 0:
+                viewpoint_cam = viewpoint_stack.pop(0)        
+            else:
+                viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
         # Render
         if (iteration - 1) == debug_from:
@@ -85,6 +99,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        if iteration % 1000 == 0:
+            using_gaussians_count.append(visibility_filter.sum().item())
+            using_gaussians_percent.append(visibility_filter.sum().item() / gaussians_cur_count)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -130,6 +147,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+        
+    # save gaussian_count and using_gaussians_count and using_gaussians_percent
+    with open(scene.model_path + "/gaussians_count.txt", "w") as f:
+        f.write("\n".join(map(str, gaussians_count)))
+    with open(scene.model_path + "/using_gaussians_count.txt", "w") as f:
+        f.write("\n".join(map(str, using_gaussians_count)))
+    with open(scene.model_path + "/using_gaussians_percent.txt", "w") as f:
+        f.write("\n".join(map(str, using_gaussians_percent)))
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -205,6 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--single_view", action="store_true", default=False)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
